@@ -1,0 +1,16 @@
+{
+  "name": "matroom",
+  "private": true,
+  "workspaces": [
+    "apps/api",
+    "apps/mobile"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev:api": "npm run dev --workspace @matroom/api",
+    "dev:mobile": "npm run start --workspace @matroom/mobile",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  }
+}

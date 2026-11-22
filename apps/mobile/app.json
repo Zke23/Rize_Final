@@ -1,0 +1,9 @@
+{
+  "expo": {
+    "name": "Matroom",
+    "slug": "matroom",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark"
+  }
+}
