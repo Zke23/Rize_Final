@@ -142,7 +142,7 @@ export const requireAuthentication: RequestHandler = async (request, response, n
   const tokenHash = hashSessionToken(match[1]);
   try {
     const result = await database.query<{ user_id: string }>(
-      `SELECT user_id
+      `SELECT auth_sessions.user_id
        FROM auth_sessions
        WHERE token_hash = $1 AND expires_at > NOW()`,
       [tokenHash],

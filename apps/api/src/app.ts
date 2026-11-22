@@ -1,12 +1,17 @@
+import { randomUUID } from "node:crypto";
+import { rm, unlink } from "node:fs/promises";
+import { join } from "node:path";
 import cors from "cors";
 import express from "express";
 import type { ErrorRequestHandler } from "express";
+import multer from "multer";
 import {
   loginAccount,
   parseCredentials,
   registerAccount,
   requireAuthentication,
 } from "./auth";
+import { config } from "./config";
 import { cache, database } from "./services";
 
 export const app = express();
@@ -14,10 +19,114 @@ export const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
+const videoExtensions: Record<string, string> = {
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/x-m4v": "m4v",
+};
+
+class UnsupportedVideoTypeError extends Error {}
+
+const videoUpload = multer({
+  storage: multer.diskStorage({
+    destination: config.videoStorageDir,
+    filename: (_request, file, callback) => {
+      callback(null, `${randomUUID()}.${videoExtensions[file.mimetype]}`);
+    },
+  }),
+  limits: { fileSize: 100 * 1024 * 1024, files: 1 },
+  fileFilter: (_request, file, callback) => {
+    if (!videoExtensions[file.mimetype]) {
+      callback(new UnsupportedVideoTypeError("Choose an MP4 or MOV video."));
+      return;
+    }
+    callback(null, true);
+  },
+});
+
 interface Profile {
   weightClass: string;
   school: string;
   seasonRecord: string;
+}
+
+interface VideoRow {
+  id: string;
+  caption: string;
+  mimeType: string;
+  createdAt: Date;
+  fileName: string;
+}
+
+interface FeedVideoRow {
+  id: string;
+  caption: string;
+  mimeType: string;
+  createdAt: Date;
+}
+
+type VideoReaction = "like" | "dislike";
+
+interface VideoSocialStats {
+  likeCount: number;
+  dislikeCount: number;
+  commentCount: number;
+  shareCount: number;
+  myReaction: VideoReaction | null;
+}
+
+interface VideoSocialStatsRow {
+  likeCount: string;
+  dislikeCount: string;
+  commentCount: string;
+  shareCount: string;
+  myReaction: VideoReaction | null;
+}
+
+interface VideoCommentRow {
+  id: string;
+  text: string;
+  authorSchool: string;
+  createdAt: Date;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function parseVideoId(value: unknown): string | null {
+  return typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+    ? value
+    : null;
+}
+
+async function getVideoSocialStats(
+  videoId: string,
+  userId: string,
+): Promise<VideoSocialStats | null> {
+  const result = await database.query<VideoSocialStatsRow>(
+    `SELECT
+       (SELECT COUNT(*) FROM video_reactions WHERE video_id = videos.id AND reaction = 'like') AS "likeCount",
+       (SELECT COUNT(*) FROM video_reactions WHERE video_id = videos.id AND reaction = 'dislike') AS "dislikeCount",
+       (SELECT COUNT(*) FROM video_comments WHERE video_id = videos.id) AS "commentCount",
+       (SELECT COUNT(*) FROM video_shares WHERE video_id = videos.id) AS "shareCount",
+       (SELECT reaction FROM video_reactions WHERE video_id = videos.id AND user_id = $2) AS "myReaction"
+     FROM videos
+     WHERE videos.id = $1`,
+    [videoId, userId],
+  );
+  const stats = result.rows[0];
+  if (!stats) {
+    return null;
+  }
+  return {
+    likeCount: Number(stats.likeCount),
+    dislikeCount: Number(stats.dislikeCount),
+    commentCount: Number(stats.commentCount),
+    shareCount: Number(stats.shareCount),
+    myReaction: stats.myReaction,
+  };
 }
 
 function parseProfile(value: unknown): Profile | null {
@@ -139,6 +248,25 @@ app.get("/api/profile", requireAuthentication, async (_request, response, next) 
   }
 });
 
+app.get("/api/profile/videos", requireAuthentication, async (_request, response, next) => {
+  try {
+    const userId: string = response.locals.userId;
+    const result = await database.query<Pick<VideoRow, "id" | "caption" | "createdAt">>(
+      `SELECT
+         id,
+         caption,
+         created_at AS "createdAt"
+       FROM videos
+       WHERE user_id = $1
+       ORDER BY created_at DESC, id DESC`,
+      [userId],
+    );
+    response.json({ videos: result.rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.put("/api/profile", requireAuthentication, async (request, response, next) => {
   const profile = parseProfile(request.body);
   if (!profile) {
@@ -165,6 +293,335 @@ app.put("/api/profile", requireAuthentication, async (request, response, next) =
       [userId, profile.weightClass, profile.school, profile.seasonRecord],
     );
     response.json({ profile: result.rows[0] });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/videos", requireAuthentication, async (request, response, next) => {
+  const offsetText = request.query.offset;
+  const offset =
+    offsetText === undefined ? 0 : typeof offsetText === "string" ? Number(offsetText) : NaN;
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > 10000) {
+    response.status(400).json({ error: "Video feed offset is invalid." });
+    return;
+  }
+
+  try {
+    const result = await database.query<FeedVideoRow>(
+      `SELECT
+         videos.id,
+         videos.caption,
+         videos.mime_type AS "mimeType",
+         videos.created_at AS "createdAt"
+       FROM videos
+       ORDER BY videos.created_at DESC, videos.id DESC
+       LIMIT 21 OFFSET $1`,
+      [offset],
+    );
+    const hasMore = result.rows.length > 20;
+    const videos = result.rows.slice(0, 20).map((video) => ({
+      ...video,
+      streamPath: `/api/videos/${video.id}/stream`,
+    }));
+    response.json({ videos, hasMore });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/videos/:id/social", requireAuthentication, async (request, response, next) => {
+  const videoId = parseVideoId(request.params.id);
+  if (!videoId) {
+    response.status(404).json({ error: "Video not found." });
+    return;
+  }
+
+  try {
+    const stats = await getVideoSocialStats(videoId, response.locals.userId);
+    if (!stats) {
+      response.status(404).json({ error: "Video not found." });
+      return;
+    }
+    response.json(stats);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/videos/:id/reaction", requireAuthentication, async (request, response, next) => {
+  const videoId = parseVideoId(request.params.id);
+  if (!videoId) {
+    response.status(404).json({ error: "Video not found." });
+    return;
+  }
+
+  const reaction = isRecord(request.body) ? request.body.reaction : undefined;
+  if (reaction !== null && reaction !== "like" && reaction !== "dislike") {
+    response.status(400).json({ error: "Choose like, dislike, or no reaction." });
+    return;
+  }
+
+  try {
+    const video = await database.query("SELECT 1 FROM videos WHERE id = $1", [videoId]);
+    if (video.rowCount === 0) {
+      response.status(404).json({ error: "Video not found." });
+      return;
+    }
+
+    const userId: string = response.locals.userId;
+    if (reaction === null) {
+      await database.query(
+        "DELETE FROM video_reactions WHERE video_id = $1 AND user_id = $2",
+        [videoId, userId],
+      );
+    } else {
+      await database.query(
+        `INSERT INTO video_reactions (video_id, user_id, reaction)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (video_id, user_id) DO UPDATE SET
+           reaction = EXCLUDED.reaction,
+           created_at = NOW()`,
+        [videoId, userId, reaction],
+      );
+    }
+
+    const stats = await getVideoSocialStats(videoId, userId);
+    if (!stats) {
+      response.status(404).json({ error: "Video not found." });
+      return;
+    }
+    response.json(stats);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/videos/:id/comments", requireAuthentication, async (request, response, next) => {
+  const videoId = parseVideoId(request.params.id);
+  if (!videoId) {
+    response.status(404).json({ error: "Video not found." });
+    return;
+  }
+
+  try {
+    const video = await database.query("SELECT 1 FROM videos WHERE id = $1", [videoId]);
+    if (video.rowCount === 0) {
+      response.status(404).json({ error: "Video not found." });
+      return;
+    }
+
+    const result = await database.query<VideoCommentRow>(
+      `SELECT
+         comments.id,
+         comments.body AS "text",
+         COALESCE(wrestler_profiles.school, 'Matroom wrestler') AS "authorSchool",
+         comments.created_at AS "createdAt"
+       FROM video_comments AS comments
+       LEFT JOIN wrestler_profiles ON wrestler_profiles.user_id = comments.user_id
+       WHERE comments.video_id = $1
+       ORDER BY comments.created_at DESC
+       LIMIT 100`,
+      [videoId],
+    );
+    response.json({ comments: result.rows.reverse() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/videos/:id/comments", requireAuthentication, async (request, response, next) => {
+  const videoId = parseVideoId(request.params.id);
+  if (!videoId) {
+    response.status(404).json({ error: "Video not found." });
+    return;
+  }
+
+  const text =
+    isRecord(request.body) && typeof request.body.text === "string"
+      ? request.body.text.trim()
+      : "";
+  if (text.length === 0 || text.length > 500) {
+    response.status(400).json({ error: "Comments must be between 1 and 500 characters." });
+    return;
+  }
+
+  try {
+    const result = await database.query<VideoCommentRow>(
+      `WITH inserted AS (
+         INSERT INTO video_comments (id, video_id, user_id, body)
+         SELECT $1, videos.id, $3, $4
+         FROM videos
+         WHERE videos.id = $2
+         RETURNING id, user_id, body, created_at
+       )
+       SELECT
+         inserted.id,
+         inserted.body AS "text",
+         COALESCE(wrestler_profiles.school, 'Matroom wrestler') AS "authorSchool",
+         inserted.created_at AS "createdAt"
+       FROM inserted
+       LEFT JOIN wrestler_profiles ON wrestler_profiles.user_id = inserted.user_id`,
+      [randomUUID(), videoId, response.locals.userId, text],
+    );
+    const comment = result.rows[0];
+    if (!comment) {
+      response.status(404).json({ error: "Video not found." });
+      return;
+    }
+    response.status(201).json({ comment });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/videos/:id/shares", requireAuthentication, async (request, response, next) => {
+  const videoId = parseVideoId(request.params.id);
+  if (!videoId) {
+    response.status(404).json({ error: "Video not found." });
+    return;
+  }
+
+  try {
+    const result = await database.query(
+      `INSERT INTO video_shares (id, video_id, user_id)
+       SELECT $1, videos.id, $3
+       FROM videos
+       WHERE videos.id = $2
+       RETURNING id`,
+      [randomUUID(), videoId, response.locals.userId],
+    );
+    if (result.rowCount === 0) {
+      response.status(404).json({ error: "Video not found." });
+      return;
+    }
+
+    const stats = await getVideoSocialStats(videoId, response.locals.userId);
+    if (!stats) {
+      response.status(404).json({ error: "Video not found." });
+      return;
+    }
+    response.status(201).json({ shareCount: stats.shareCount });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/videos/:id", requireAuthentication, async (request, response, next) => {
+  const videoId = parseVideoId(request.params.id);
+  if (!videoId) {
+    response.status(404).json({ error: "Video not found." });
+    return;
+  }
+
+  const client = await database.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query<{ fileName: string }>(
+      `DELETE FROM videos
+       WHERE id = $1 AND user_id = $2
+       RETURNING file_name AS "fileName"`,
+      [videoId, response.locals.userId],
+    );
+    const video = result.rows[0];
+    if (!video) {
+      await client.query("ROLLBACK");
+      response.status(404).json({ error: "Video not found." });
+      return;
+    }
+
+    await rm(join(config.videoStorageDir, video.fileName), { force: true });
+    await client.query("COMMIT");
+    response.status(204).end();
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
+app.post(
+  "/api/videos",
+  requireAuthentication,
+  videoUpload.single("video"),
+  async (request, response, next) => {
+    const file = request.file;
+    if (!file) {
+      response.status(400).json({ error: "Choose a video to upload." });
+      return;
+    }
+
+    const caption =
+      typeof request.body.caption === "string" ? request.body.caption.trim() : "";
+    if (caption.length > 280) {
+      try {
+        await unlink(file.path);
+      } catch (error) {
+        console.error("Failed to remove a video with an invalid caption:", error);
+      }
+      response.status(400).json({ error: "Captions must be 280 characters or fewer." });
+      return;
+    }
+
+    const id = randomUUID();
+    try {
+      const result = await database.query<VideoRow>(
+        `INSERT INTO videos (id, user_id, file_name, mime_type, caption)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING
+           id,
+           caption,
+           mime_type AS "mimeType",
+           created_at AS "createdAt",
+           file_name AS "fileName"`,
+        [id, response.locals.userId, file.filename, file.mimetype, caption],
+      );
+      const video = result.rows[0];
+      response.status(201).json({
+        id: video.id,
+        caption: video.caption,
+        mimeType: video.mimeType,
+        createdAt: video.createdAt,
+        streamPath: `/api/videos/${id}/stream`,
+      });
+    } catch (error) {
+      try {
+        await unlink(file.path);
+      } catch (cleanupError) {
+        console.error("Failed to remove an unrecorded video upload:", cleanupError);
+      }
+      next(error);
+    }
+  },
+);
+
+app.get("/api/videos/:id/stream", requireAuthentication, async (request, response, next) => {
+  const videoId = parseVideoId(request.params.id);
+  if (!videoId) {
+    response.status(404).json({ error: "Video not found." });
+    return;
+  }
+
+  try {
+    const result = await database.query<{ fileName: string; mimeType: string }>(
+      `SELECT file_name AS "fileName", mime_type AS "mimeType"
+       FROM videos
+       WHERE id = $1`,
+      [videoId],
+    );
+    const video = result.rows[0];
+    if (!video) {
+      response.status(404).json({ error: "Video not found." });
+      return;
+    }
+
+    response.type(video.mimeType);
+    response.sendFile(join(config.videoStorageDir, video.fileName), (error) => {
+      if (error) {
+        next(error);
+      }
+    });
   } catch (error) {
     next(error);
   }
@@ -200,7 +657,22 @@ app.use((_request, response) => {
   response.status(404).json({ error: "Not found" });
 });
 
-const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
+const errorHandler: ErrorRequestHandler = (error, _request, response, next) => {
+  if (error instanceof UnsupportedVideoTypeError) {
+    response.status(415).json({ error: error.message });
+    return;
+  }
+  if (error instanceof multer.MulterError) {
+    const status = error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+    response.status(status).json({
+      error: status === 413 ? "Videos must be 100 MB or smaller." : "The video upload is invalid.",
+    });
+    return;
+  }
+  if (response.headersSent) {
+    next(error);
+    return;
+  }
   console.error("API request failed:", error);
   response.status(500).json({ error: "Internal server error" });
 };

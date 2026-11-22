@@ -3,6 +3,7 @@ import * as SecureStore from "expo-secure-store";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -11,11 +12,13 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { ApiError, apiRequest, errorMessage, isRecord } from "./api";
+import VideoFeedScreen from "./VideoFeedScreen";
 
-const apiUrl = (process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:3000").replace(/\/$/, "");
 const sessionStorageKey = "matroom.session";
 
 type AuthMode = "register" | "login";
+type MainTab = "feed" | "messages" | "profile";
 
 interface Profile {
   weightClass: string;
@@ -28,17 +31,10 @@ interface SessionResponse {
   email: string;
 }
 
-class ApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+interface ProfileVideo {
+  id: string;
+  caption: string;
+  createdAt: string;
 }
 
 function parseSession(value: unknown): SessionResponse {
@@ -76,36 +72,26 @@ function parseProfile(value: unknown): Profile | null {
   };
 }
 
-async function apiRequest(
-  path: string,
-  options: { token?: string; method?: string; body?: object } = {},
-): Promise<unknown> {
-  const response = await fetch(`${apiUrl}${path}`, {
-    method: options.method ?? "GET",
-    headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
-    },
-    ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+function parseProfileVideos(value: unknown): ProfileVideo[] {
+  if (!isRecord(value) || !Array.isArray(value.videos)) {
+    throw new Error("The API returned an invalid uploads response.");
+  }
+
+  return value.videos.map((video): ProfileVideo => {
+    if (
+      !isRecord(video) ||
+      typeof video.id !== "string" ||
+      typeof video.caption !== "string" ||
+      typeof video.createdAt !== "string"
+    ) {
+      throw new Error("The API returned an invalid uploaded video.");
+    }
+    return {
+      id: video.id,
+      caption: video.caption,
+      createdAt: video.createdAt,
+    };
   });
-
-  if (response.status === 204) {
-    return null;
-  }
-
-  const payload: unknown = await response.json();
-  if (!response.ok) {
-    const message =
-      isRecord(payload) && typeof payload.error === "string"
-        ? payload.error
-        : `The request failed (${response.status}).`;
-    throw new ApiError(message, response.status);
-  }
-  return payload;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Something went wrong. Please try again.";
 }
 
 export default function App() {
@@ -114,6 +100,7 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [sessionToken, setSessionToken] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<MainTab>("feed");
   const [profile, setProfile] = useState<Profile>({
     weightClass: "",
     school: "",
@@ -253,6 +240,7 @@ export default function App() {
       setHasProfile(false);
       setProfile({ weightClass: "", school: "", seasonRecord: "" });
       setAuthMode("login");
+      setActiveTab("feed");
     } catch (signOutError) {
       setError(errorMessage(signOutError));
     } finally {
@@ -267,21 +255,17 @@ export default function App() {
   return (
     <SafeAreaView style={styles.screen}>
       <StatusBar style="light" />
-      <ScrollView
-        contentContainerStyle={styles.content}
-        keyboardShouldPersistTaps="handled"
-      >
-        <View style={styles.header}>
-          <Text style={styles.wordmark}>MATROOM</Text>
-          <Text style={styles.subtitle}>Wrestling, in the spotlight.</Text>
-        </View>
-
-        {isStarting ? (
+      {isStarting ? (
+        <ScrollView contentContainerStyle={styles.content}>
+          <BrandHeader />
           <View style={styles.card}>
             <ActivityIndicator color="#f3a64a" />
             <Text style={styles.description}>Loading your account...</Text>
           </View>
-        ) : sessionToken && !profileReady ? (
+        </ScrollView>
+      ) : sessionToken && !profileReady ? (
+        <ScrollView contentContainerStyle={styles.content}>
+          <BrandHeader />
           <View style={styles.card}>
             <Text style={styles.title}>Connecting to your profile</Text>
             {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -298,52 +282,36 @@ export default function App() {
               <Text style={styles.secondaryButtonText}>Sign out</Text>
             </Pressable>
           </View>
-        ) : sessionToken ? (
-          <View style={styles.card}>
-            <Text style={styles.eyebrow}>WRESTLER PROFILE</Text>
-            <Text style={styles.title}>
-              {hasProfile ? "Your profile" : "Create your profile"}
-            </Text>
-            <Text style={styles.description}>
-              Add your school, weight class, and season record.
-            </Text>
-
-            <FormField
-              label="Weight class"
-              value={profile.weightClass}
-              placeholder="Example: 125 lb"
-              onChangeText={(value) => updateProfile("weightClass", value)}
-            />
-            <FormField
-              label="School"
-              value={profile.school}
-              placeholder="Your school"
-              onChangeText={(value) => updateProfile("school", value)}
-            />
-            <FormField
-              label="Season record (W-L or W-L-T)"
-              value={profile.seasonRecord}
-              placeholder="Example: 18-2"
-              onChangeText={(value) => updateProfile("seasonRecord", value)}
-              autoCapitalize="none"
-            />
-
-            {error ? <Text style={styles.error}>{error}</Text> : null}
-            {notice ? <Text style={styles.notice}>{notice}</Text> : null}
-            <ActionButton
-              label={isBusy ? "Saving..." : "Save profile"}
-              disabled={isBusy}
-              onPress={() => void saveProfile()}
-            />
-            <Pressable
-              disabled={isBusy}
-              onPress={() => void signOut()}
-              style={styles.secondaryButton}
-            >
-              <Text style={styles.secondaryButtonText}>Sign out</Text>
-            </Pressable>
+        </ScrollView>
+      ) : sessionToken ? (
+        <View style={styles.dashboard}>
+          <View style={styles.dashboardContent}>
+            {activeTab === "feed" ? (
+              <VideoFeedScreen token={sessionToken} />
+            ) : activeTab === "messages" ? (
+              <MessagesScreen />
+            ) : (
+              <ProfileScreen
+                token={sessionToken}
+                profile={profile}
+                hasProfile={hasProfile}
+                isBusy={isBusy}
+                error={error}
+                notice={notice}
+                onUpdate={updateProfile}
+                onSave={() => void saveProfile()}
+                onSignOut={() => void signOut()}
+              />
+            )}
           </View>
-        ) : (
+          <BottomNavigation activeTab={activeTab} onChange={setActiveTab} />
+        </View>
+      ) : (
+        <ScrollView
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+        >
+          <BrandHeader />
           <View style={styles.card}>
             <Text style={styles.eyebrow}>WRESTLER PROFILE</Text>
             <Text style={styles.title}>
@@ -409,11 +377,243 @@ export default function App() {
               </Text>
             </Pressable>
           </View>
-        )}
-
-        <Text style={styles.footer}>YOUR PROFILE. YOUR MATROOM.</Text>
-      </ScrollView>
+          <Text style={styles.footer}>YOUR PROFILE. YOUR MATROOM.</Text>
+        </ScrollView>
+      )}
     </SafeAreaView>
+  );
+}
+
+function BrandHeader() {
+  return (
+    <View style={styles.header}>
+      <Text style={styles.wordmark}>MATROOM</Text>
+      <Text style={styles.subtitle}>Wrestling, in the spotlight.</Text>
+    </View>
+  );
+}
+
+interface ProfileScreenProps {
+  token: string;
+  profile: Profile;
+  hasProfile: boolean;
+  isBusy: boolean;
+  error: string;
+  notice: string;
+  onUpdate: (field: keyof Profile, value: string) => void;
+  onSave: () => void;
+  onSignOut: () => void;
+}
+
+function ProfileScreen({
+  token,
+  profile,
+  hasProfile,
+  isBusy,
+  error,
+  notice,
+  onUpdate,
+  onSave,
+  onSignOut,
+}: ProfileScreenProps) {
+  const [videos, setVideos] = useState<ProfileVideo[]>([]);
+  const [areVideosLoading, setAreVideosLoading] = useState(true);
+  const [videosError, setVideosError] = useState("");
+  const [deletingVideoId, setDeletingVideoId] = useState<string | null>(null);
+
+  const loadVideos = useCallback(async (): Promise<void> => {
+    setVideosError("");
+    setAreVideosLoading(true);
+    try {
+      setVideos(parseProfileVideos(await apiRequest("/api/profile/videos", { token })));
+    } catch (loadError) {
+      setVideosError(errorMessage(loadError));
+    } finally {
+      setAreVideosLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void loadVideos();
+  }, [loadVideos]);
+
+  async function takeDownVideo(videoId: string): Promise<void> {
+    setVideosError("");
+    setDeletingVideoId(videoId);
+    try {
+      await apiRequest(`/api/videos/${encodeURIComponent(videoId)}`, {
+        token,
+        method: "DELETE",
+      });
+      setVideos((currentVideos) =>
+        currentVideos.filter((video) => video.id !== videoId),
+      );
+    } catch (deleteError) {
+      setVideosError(errorMessage(deleteError));
+    } finally {
+      setDeletingVideoId(null);
+    }
+  }
+
+  function confirmTakeDown(video: ProfileVideo): void {
+    Alert.alert(
+      "Take down this video?",
+      "It will be removed from your profile and the feed.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Take down",
+          style: "destructive",
+          onPress: () => void takeDownVideo(video.id),
+        },
+      ],
+    );
+  }
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.profileContent}
+      keyboardShouldPersistTaps="handled"
+    >
+      <View style={styles.card}>
+        <Text style={styles.eyebrow}>WRESTLER PROFILE</Text>
+        <Text style={styles.title}>{hasProfile ? "Your profile" : "Create your profile"}</Text>
+        <Text style={styles.description}>
+          Add your school, weight class, and season record.
+        </Text>
+        <FormField
+          label="Weight class"
+          value={profile.weightClass}
+          placeholder="Example: 125 lb"
+          onChangeText={(value) => onUpdate("weightClass", value)}
+        />
+        <FormField
+          label="School"
+          value={profile.school}
+          placeholder="Your school"
+          onChangeText={(value) => onUpdate("school", value)}
+        />
+        <FormField
+          label="Season record (W-L or W-L-T)"
+          value={profile.seasonRecord}
+          placeholder="Example: 18-2"
+          onChangeText={(value) => onUpdate("seasonRecord", value)}
+          autoCapitalize="none"
+        />
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {notice ? <Text style={styles.notice}>{notice}</Text> : null}
+        <ActionButton
+          label={isBusy ? "Saving..." : "Save profile"}
+          disabled={isBusy}
+          onPress={onSave}
+        />
+        <Pressable
+          disabled={isBusy}
+          onPress={onSignOut}
+          style={styles.secondaryButton}
+        >
+          <Text style={styles.secondaryButtonText}>Sign out</Text>
+        </Pressable>
+      </View>
+      <View style={styles.card}>
+        <Text style={styles.eyebrow}>YOUR VIDEOS</Text>
+        <Text style={styles.title}>Uploads</Text>
+        {areVideosLoading ? (
+          <ActivityIndicator color="#f3a64a" />
+        ) : videosError && videos.length === 0 ? (
+          <>
+            <Text style={styles.error}>{videosError}</Text>
+            <ActionButton
+              label="Retry"
+              disabled={areVideosLoading}
+              onPress={() => void loadVideos()}
+            />
+          </>
+        ) : videos.length === 0 ? (
+          <Text style={styles.description}>Your uploaded clips will appear here.</Text>
+        ) : (
+          <View style={styles.uploadList}>
+            {videos.map((video) => (
+              <View key={video.id} style={styles.uploadRow}>
+                <View style={styles.uploadDetails}>
+                  <Text style={styles.uploadCaption} numberOfLines={2}>
+                    {video.caption || "Wrestling clip"}
+                  </Text>
+                  <Text style={styles.uploadDate}>
+                    {new Date(video.createdAt).toLocaleDateString()}
+                  </Text>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Take down ${video.caption || "video"}`}
+                  disabled={deletingVideoId !== null}
+                  onPress={() => confirmTakeDown(video)}
+                  style={[
+                    styles.takeDownButton,
+                    deletingVideoId !== null && styles.disabledButton,
+                  ]}
+                >
+                  <Text style={styles.takeDownText}>
+                    {deletingVideoId === video.id ? "Taking down..." : "Take down"}
+                  </Text>
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        )}
+        {videosError && videos.length > 0 ? (
+          <Text style={styles.error}>{videosError}</Text>
+        ) : null}
+      </View>
+    </ScrollView>
+  );
+}
+
+function MessagesScreen() {
+  return (
+    <View style={styles.messagesScreen}>
+      <Text style={styles.eyebrow}>MATROOM</Text>
+      <Text style={styles.title}>Messages</Text>
+      <Text style={styles.description}>
+        Your personal messages will appear here. Messaging is coming soon.
+      </Text>
+    </View>
+  );
+}
+
+interface BottomNavigationProps {
+  activeTab: MainTab;
+  onChange: (tab: MainTab) => void;
+}
+
+function BottomNavigation({ activeTab, onChange }: BottomNavigationProps) {
+  const tabs: { id: MainTab; label: string }[] = [
+    { id: "feed", label: "Feed" },
+    { id: "messages", label: "Messages" },
+    { id: "profile", label: "Profile" },
+  ];
+
+  return (
+    <View style={styles.bottomNavigation}>
+      {tabs.map((tab) => (
+        <Pressable
+          key={tab.id}
+          accessibilityRole="button"
+          accessibilityState={{ selected: activeTab === tab.id }}
+          onPress={() => onChange(tab.id)}
+          style={styles.navigationButton}
+        >
+          <Text
+            style={[
+              styles.navigationLabel,
+              activeTab === tab.id && styles.navigationLabelActive,
+            ]}
+          >
+            {tab.label}
+          </Text>
+        </Pressable>
+      ))}
+    </View>
   );
 }
 
@@ -485,6 +685,47 @@ const styles = StyleSheet.create({
     paddingTop: 24,
     paddingBottom: 18,
     gap: 32,
+  },
+  dashboard: {
+    flex: 1,
+  },
+  dashboardContent: {
+    flex: 1,
+  },
+  profileContent: {
+    flexGrow: 1,
+    padding: 20,
+    paddingBottom: 28,
+    gap: 16,
+  },
+  messagesScreen: {
+    flex: 1,
+    justifyContent: "center",
+    padding: 28,
+    gap: 14,
+  },
+  bottomNavigation: {
+    minHeight: 62,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-around",
+    borderTopWidth: 1,
+    borderTopColor: "#303438",
+    backgroundColor: "#101214",
+  },
+  navigationButton: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 62,
+  },
+  navigationLabel: {
+    color: "#8e9397",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  navigationLabelActive: {
+    color: "#f3a64a",
   },
   header: {
     gap: 6,
@@ -578,6 +819,44 @@ const styles = StyleSheet.create({
   notice: {
     color: "#9ce3b0",
     fontSize: 13,
+  },
+  uploadList: {
+    gap: 10,
+  },
+  uploadRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#303438",
+    paddingVertical: 8,
+  },
+  uploadDetails: {
+    flex: 1,
+    gap: 4,
+  },
+  uploadCaption: {
+    color: "#f4f4f1",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  uploadDate: {
+    color: "#9b9fa3",
+    fontSize: 12,
+  },
+  takeDownButton: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#7a3d38",
+    backgroundColor: "#30201f",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  takeDownText: {
+    color: "#ff8b82",
+    fontSize: 12,
+    fontWeight: "800",
   },
   footer: {
     color: "#8e9397",
