@@ -1,3 +1,4 @@
+import { mkdir } from "node:fs/promises";
 import { app } from "./app";
 import { config } from "./config";
 import { initializeSchema } from "./schema";
@@ -7,6 +8,7 @@ async function start(): Promise<void> {
   await cache.connect();
   await database.query("SELECT 1");
   await initializeSchema();
+  await mkdir(config.videoStorageDir, { recursive: true });
 
   const server = app.listen(config.port, () => {
     console.log(`Matroom API listening on http://localhost:${config.port}`);

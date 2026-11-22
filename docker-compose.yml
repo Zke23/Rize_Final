@@ -35,10 +35,13 @@ services:
     restart: unless-stopped
     environment:
       API_PORT: 3000
+      VIDEO_STORAGE_DIR: /app/uploads
       DATABASE_URL: postgresql://${POSTGRES_USER:-matroom}:${POSTGRES_PASSWORD:-change-this-local-password}@postgres:5432/${POSTGRES_DB:-matroom}
       REDIS_URL: redis://redis:6379
     ports:
       - "${API_PORT:-3000}:3000"
+    volumes:
+      - videos_data:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,3 +61,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  videos_data:

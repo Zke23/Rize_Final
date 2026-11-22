@@ -15,4 +15,5 @@ export const config = {
   port: Number(process.env.API_PORT ?? 3000),
   databaseUrl: requiredEnv("DATABASE_URL"),
   redisUrl: requiredEnv("REDIS_URL"),
+  videoStorageDir: process.env.VIDEO_STORAGE_DIR ?? resolve(__dirname, "../../../uploads"),
 };
