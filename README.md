@@ -16,6 +16,8 @@ Matroom is a starter monorepo for a wrestling-focused social app. It contains an
 
 Create an account in the app, then use the Feed, Messages, and Profile tabs. The feed scrolls vertically through uploaded clips; choose **Upload** to select an MP4 or MOV video up to 60 seconds and 100 MB. Captions are optional. Signed-in users can like or dislike each clip, comment (commenters are identified by their school when available), and share its caption and video ID through the device share menu. Messages currently opens a placeholder screen.
 
+The feed header includes a subtly animated King of the Hill top three. Sample leaders are shown until real nominations arrive; each account has one nomination and can move it to another clip.
+
 Uploaded clips are associated with the account that shared them. The Profile tab lists your clips and lets you take them down; only the owner can delete a clip. Profiles and video metadata are stored in PostgreSQL. Uploaded video files are stored in the Compose `videos_data` volume and survive container restarts and `docker compose down`. Do not use `docker compose down -v` unless you intend to delete the database, cache, and uploaded videos. This local volume is for development on one Docker host; a Cloud Run deployment needs object storage such as Google Cloud Storage instead.
 
 The API health endpoint is `http://localhost:3000/api/health`. It checks PostgreSQL and Redis and returns HTTP 503 if either service is unavailable. The API container waits for both data services to become healthy before starting.

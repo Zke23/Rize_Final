@@ -70,17 +70,27 @@ type VideoReaction = "like" | "dislike";
 interface VideoSocialStats {
   likeCount: number;
   dislikeCount: number;
+  nominationCount: number;
   commentCount: number;
   shareCount: number;
   myReaction: VideoReaction | null;
+  myNomination: string | null;
 }
 
 interface VideoSocialStatsRow {
   likeCount: string;
   dislikeCount: string;
+  nominationCount: string;
   commentCount: string;
   shareCount: string;
   myReaction: VideoReaction | null;
+  myNomination: string | null;
+}
+
+interface KingOfHillVideoRow {
+  id: string;
+  caption: string;
+  nominationCount: number;
 }
 
 interface VideoCommentRow {
@@ -109,9 +119,11 @@ async function getVideoSocialStats(
     `SELECT
        (SELECT COUNT(*) FROM video_reactions WHERE video_id = videos.id AND reaction = 'like') AS "likeCount",
        (SELECT COUNT(*) FROM video_reactions WHERE video_id = videos.id AND reaction = 'dislike') AS "dislikeCount",
+       (SELECT COUNT(*) FROM video_nominations WHERE video_id = videos.id) AS "nominationCount",
        (SELECT COUNT(*) FROM video_comments WHERE video_id = videos.id) AS "commentCount",
        (SELECT COUNT(*) FROM video_shares WHERE video_id = videos.id) AS "shareCount",
-       (SELECT reaction FROM video_reactions WHERE video_id = videos.id AND user_id = $2) AS "myReaction"
+       (SELECT reaction FROM video_reactions WHERE video_id = videos.id AND user_id = $2) AS "myReaction",
+       (SELECT video_id FROM video_nominations WHERE user_id = $2) AS "myNomination"
      FROM videos
      WHERE videos.id = $1`,
     [videoId, userId],
@@ -123,9 +135,11 @@ async function getVideoSocialStats(
   return {
     likeCount: Number(stats.likeCount),
     dislikeCount: Number(stats.dislikeCount),
+    nominationCount: Number(stats.nominationCount),
     commentCount: Number(stats.commentCount),
     shareCount: Number(stats.shareCount),
     myReaction: stats.myReaction,
+    myNomination: stats.myNomination,
   };
 }
 
@@ -330,6 +344,25 @@ app.get("/api/videos", requireAuthentication, async (request, response, next) =>
   }
 });
 
+app.get("/api/videos/king-of-the-hill", requireAuthentication, async (_request, response, next) => {
+  try {
+    const result = await database.query<KingOfHillVideoRow>(
+      `SELECT
+         videos.id,
+         videos.caption,
+         COUNT(video_nominations.user_id)::int AS "nominationCount"
+       FROM videos
+       JOIN video_nominations ON video_nominations.video_id = videos.id
+       GROUP BY videos.id
+       ORDER BY COUNT(video_nominations.user_id) DESC, videos.created_at DESC, videos.id DESC
+       LIMIT 3`,
+    );
+    response.json({ videos: result.rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/videos/:id/social", requireAuthentication, async (request, response, next) => {
   const videoId = parseVideoId(request.params.id);
   if (!videoId) {
@@ -339,6 +372,42 @@ app.get("/api/videos/:id/social", requireAuthentication, async (request, respons
 
   try {
     const stats = await getVideoSocialStats(videoId, response.locals.userId);
+    if (!stats) {
+      response.status(404).json({ error: "Video not found." });
+      return;
+    }
+    response.json(stats);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/videos/:id/nomination", requireAuthentication, async (request, response, next) => {
+  const videoId = parseVideoId(request.params.id);
+  if (!videoId) {
+    response.status(404).json({ error: "Video not found." });
+    return;
+  }
+
+  try {
+    const userId: string = response.locals.userId;
+    const result = await database.query(
+      `INSERT INTO video_nominations (user_id, video_id)
+       SELECT $1, videos.id
+       FROM videos
+       WHERE videos.id = $2
+       ON CONFLICT (user_id) DO UPDATE SET
+         video_id = EXCLUDED.video_id,
+         updated_at = NOW()
+       RETURNING video_id`,
+      [userId, videoId],
+    );
+    if (result.rowCount === 0) {
+      response.status(404).json({ error: "Video not found." });
+      return;
+    }
+
+    const stats = await getVideoSocialStats(videoId, userId);
     if (!stats) {
       response.status(404).json({ error: "Video not found." });
       return;

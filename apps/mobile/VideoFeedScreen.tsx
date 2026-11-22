@@ -4,6 +4,9 @@ import { useVideoPlayer, VideoView } from "expo-video";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
+  Alert,
+  Easing,
   FlatList,
   Modal,
   Pressable,
@@ -18,6 +21,11 @@ import { apiRequest, apiUrl, errorMessage, isRecord } from "./api";
 
 const maximumVideoBytes = 100 * 1024 * 1024;
 const pageSize = 20;
+const sampleKingVideos = [
+  { id: "sample-escape", title: "Last-Second Escape", nominations: 128 },
+  { id: "sample-double-leg", title: "Clean Double-Leg", nominations: 104 },
+  { id: "sample-overtime", title: "Overtime Takedown", nominations: 87 },
+].sort((first, second) => second.nominations - first.nominations);
 
 interface VideoClip {
   id: string;
@@ -37,9 +45,17 @@ type VideoReaction = "like" | "dislike" | null;
 interface VideoSocial {
   likeCount: number;
   dislikeCount: number;
+  nominationCount: number;
   commentCount: number;
   shareCount: number;
   myReaction: VideoReaction;
+  myNomination: string | null;
+}
+
+interface KingOfHillVideo {
+  id: string;
+  title: string;
+  nominations: number;
 }
 
 interface VideoComment {
@@ -58,8 +74,10 @@ function parseVideoSocial(value: unknown): VideoSocial {
     !isRecord(value) ||
     !isNonNegativeSafeInteger(value.likeCount) ||
     !isNonNegativeSafeInteger(value.dislikeCount) ||
+    !isNonNegativeSafeInteger(value.nominationCount) ||
     !isNonNegativeSafeInteger(value.commentCount) ||
     !isNonNegativeSafeInteger(value.shareCount) ||
+    (value.myNomination !== null && typeof value.myNomination !== "string") ||
     (value.myReaction !== null && value.myReaction !== "like" && value.myReaction !== "dislike")
   ) {
     throw new Error("The API returned invalid video activity.");
@@ -67,10 +85,34 @@ function parseVideoSocial(value: unknown): VideoSocial {
   return {
     likeCount: value.likeCount,
     dislikeCount: value.dislikeCount,
+    nominationCount: value.nominationCount,
     commentCount: value.commentCount,
     shareCount: value.shareCount,
     myReaction: value.myReaction,
+    myNomination: value.myNomination,
   };
+}
+
+function parseKingOfHillVideos(value: unknown): KingOfHillVideo[] {
+  if (!isRecord(value) || !Array.isArray(value.videos)) {
+    throw new Error("The API returned an invalid King of the Hill list.");
+  }
+
+  return value.videos.map((video): KingOfHillVideo => {
+    if (
+      !isRecord(video) ||
+      typeof video.id !== "string" ||
+      typeof video.caption !== "string" ||
+      !isNonNegativeSafeInteger(video.nominationCount)
+    ) {
+      throw new Error("The API returned an invalid nominated video.");
+    }
+    return {
+      id: video.id,
+      title: video.caption || "Wrestling clip",
+      nominations: video.nominationCount,
+    };
+  });
 }
 
 function parseVideoComment(value: unknown): VideoComment {
@@ -96,6 +138,101 @@ function parseVideoComments(value: unknown): VideoComment[] {
     throw new Error("The API returned an invalid comments response.");
   }
   return value.comments.map(parseVideoComment);
+}
+
+function KingOfHillShowcase({
+  videos,
+  error,
+}: {
+  videos: KingOfHillVideo[];
+  error: string;
+}) {
+  const leaders = videos.length > 0 ? videos : sampleKingVideos;
+  return (
+    <View style={styles.kingSection}>
+      <View style={styles.kingHeader}>
+        <View>
+          <Text style={styles.kingEyebrow}>KING OF THE HILL</Text>
+          <Text style={styles.kingSubtitle}>Top clips by nominations</Text>
+          <Text style={styles.kingRule}>One nomination per account</Text>
+        </View>
+        <Text style={styles.sampleBadge}>{videos.length > 0 ? "LIVE" : "SAMPLE"}</Text>
+      </View>
+      {error ? <Text style={styles.kingError}>{error}</Text> : null}
+      <View style={styles.kingCardRow}>
+        {leaders.map((video, index) => (
+          <KingOfHillCard key={video.id} video={video} rank={index + 1} />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+interface KingOfHillCardProps {
+  video: KingOfHillVideo;
+  rank: number;
+}
+
+function KingOfHillCard({ video, rank }: KingOfHillCardProps) {
+  const movement = useRef(new Animated.Value(0)).current;
+  const direction = rank === 2 ? 1 : -1;
+
+  useEffect(() => {
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.delay(rank * 130),
+        Animated.timing(movement, {
+          toValue: 1,
+          duration: 850,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(movement, {
+          toValue: 0,
+          duration: 850,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    animation.start();
+    return () => animation.stop();
+  }, [movement, rank]);
+
+  const animatedStyle = {
+    transform: [
+      {
+        translateY: movement.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0, direction * 3],
+        }),
+      },
+      {
+        rotate: movement.interpolate({
+          inputRange: [0, 1],
+          outputRange: [direction * 0.4 + "deg", direction * -0.4 + "deg"],
+        }),
+      },
+    ],
+  };
+
+  return (
+    <Animated.View
+      style={[
+        styles.kingCard,
+        rank === 1 && styles.kingCardLeader,
+        animatedStyle,
+      ]}
+    >
+      <View style={styles.kingCardTop}>
+        <Text style={styles.kingRank}>#{rank}</Text>
+        <Text style={styles.kingNominations}>{video.nominations} noms</Text>
+      </View>
+      <Text style={styles.kingVideoTitle} numberOfLines={2}>
+        {video.title}
+      </Text>
+    </Animated.View>
+  );
 }
 
 function parseVideoPage(value: unknown): VideoPage {
@@ -131,6 +268,10 @@ interface VideoFeedScreenProps {
 
 export default function VideoFeedScreen({ token }: VideoFeedScreenProps) {
   const [videos, setVideos] = useState<VideoClip[]>([]);
+  const [kingOfHillVideos, setKingOfHillVideos] = useState<KingOfHillVideo[]>([]);
+  const [kingOfHillError, setKingOfHillError] = useState("");
+  const [myNominationId, setMyNominationId] = useState<string | null>(null);
+  const [nominationVersion, setNominationVersion] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const [feedHeight, setFeedHeight] = useState(0);
@@ -145,6 +286,17 @@ export default function VideoFeedScreen({ token }: VideoFeedScreenProps) {
   const offset = useRef(0);
   const requestInFlight = useRef(false);
   const listRef = useRef<FlatList<VideoClip>>(null);
+
+  const loadKingOfHill = useCallback(async (): Promise<void> => {
+    try {
+      setKingOfHillVideos(
+        parseKingOfHillVideos(await apiRequest("/api/videos/king-of-the-hill", { token })),
+      );
+      setKingOfHillError("");
+    } catch (loadError) {
+      setKingOfHillError(errorMessage(loadError));
+    }
+  }, [token]);
 
   const loadVideos = useCallback(
     async (reset: boolean): Promise<void> => {
@@ -183,6 +335,19 @@ export default function VideoFeedScreen({ token }: VideoFeedScreenProps) {
   useEffect(() => {
     void loadVideos(true);
   }, [loadVideos]);
+
+  useEffect(() => {
+    void loadKingOfHill();
+  }, [loadKingOfHill]);
+
+  const handleNominationChanged = useCallback(
+    (videoId: string): void => {
+      setMyNominationId(videoId);
+      setNominationVersion((version) => version + 1);
+      void loadKingOfHill();
+    },
+    [loadKingOfHill],
+  );
 
   async function uploadVideo(): Promise<void> {
     setUploadError("");
@@ -270,6 +435,7 @@ export default function VideoFeedScreen({ token }: VideoFeedScreenProps) {
           <Text style={styles.uploadButtonText}>+ Upload</Text>
         </Pressable>
       </View>
+      <KingOfHillShowcase videos={kingOfHillVideos} error={kingOfHillError} />
 
       {isLoading && videos.length === 0 ? (
         <View style={styles.centerMessage}>
@@ -306,6 +472,9 @@ export default function VideoFeedScreen({ token }: VideoFeedScreenProps) {
                 token={token}
                 active={index === activeIndex}
                 height={feedHeight}
+                myNominationId={myNominationId}
+                nominationVersion={nominationVersion}
+                onNominationChanged={handleNominationChanged}
               />
             )}
             getItemLayout={
@@ -401,13 +570,25 @@ interface VideoFeedItemProps {
   token: string;
   active: boolean;
   height: number;
+  myNominationId: string | null;
+  nominationVersion: number;
+  onNominationChanged: (videoId: string) => void;
 }
 
-function VideoFeedItem({ clip, token, active, height }: VideoFeedItemProps) {
+function VideoFeedItem({
+  clip,
+  token,
+  active,
+  height,
+  myNominationId,
+  nominationVersion,
+  onNominationChanged,
+}: VideoFeedItemProps) {
   const [muted, setMuted] = useState(true);
   const [social, setSocial] = useState<VideoSocial | null>(null);
   const [socialError, setSocialError] = useState("");
   const [isUpdatingReaction, setIsUpdatingReaction] = useState(false);
+  const [isSavingNomination, setIsSavingNomination] = useState(false);
   const [isCommentsOpen, setIsCommentsOpen] = useState(false);
   const [comments, setComments] = useState<VideoComment[]>([]);
   const [areCommentsLoading, setAreCommentsLoading] = useState(false);
@@ -452,7 +633,7 @@ function VideoFeedItem({ clip, token, active, height }: VideoFeedItemProps) {
 
   useEffect(() => {
     void loadSocial();
-  }, [loadSocial]);
+  }, [loadSocial, nominationVersion]);
 
   useEffect(() => {
     if (active) {
@@ -490,6 +671,50 @@ function VideoFeedItem({ clip, token, active, height }: VideoFeedItemProps) {
     } finally {
       setIsUpdatingReaction(false);
     }
+  }
+
+  const currentNominationId = myNominationId ?? social?.myNomination ?? null;
+
+  async function saveNomination(): Promise<void> {
+    if (!social || isSavingNomination || currentNominationId === clip.id) {
+      return;
+    }
+
+    setIsSavingNomination(true);
+    setSocialError("");
+    try {
+      setSocial(
+        parseVideoSocial(
+          await apiRequest(`/api/videos/${clip.id}/nomination`, {
+            token,
+            method: "PUT",
+          }),
+        ),
+      );
+      onNominationChanged(clip.id);
+    } catch (nominationError) {
+      setSocialError(errorMessage(nominationError));
+    } finally {
+      setIsSavingNomination(false);
+    }
+  }
+
+  function requestNomination(): void {
+    if (!social || isSavingNomination || currentNominationId === clip.id) {
+      return;
+    }
+    if (currentNominationId) {
+      Alert.alert(
+        "Move your nomination?",
+        "Your one nomination will move to this video.",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Move nomination", onPress: () => void saveNomination() },
+        ],
+      );
+      return;
+    }
+    void saveNomination();
   }
 
   function openComments(): void {
@@ -604,6 +829,30 @@ function VideoFeedItem({ clip, token, active, height }: VideoFeedItemProps) {
               Dislike
             </Text>
             <Text style={styles.socialCount}>{social?.dislikeCount ?? 0}</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`${social?.nominationCount ?? 0} King of the Hill nominations`}
+            accessibilityState={{ selected: currentNominationId === clip.id }}
+            disabled={!social || isSavingNomination || currentNominationId === clip.id}
+            onPress={requestNomination}
+            style={styles.socialButton}
+          >
+            <Text
+              style={[
+                styles.socialLabel,
+                currentNominationId === clip.id && styles.socialLabelActive,
+              ]}
+            >
+              {isSavingNomination
+                ? "Saving..."
+                : currentNominationId === clip.id
+                  ? "Nominated"
+                  : currentNominationId
+                    ? "Move vote"
+                    : "Nominate"}
+            </Text>
+            <Text style={styles.socialCount}>{social?.nominationCount ?? 0}</Text>
           </Pressable>
           <Pressable
             accessibilityRole="button"
@@ -745,6 +994,92 @@ const styles = StyleSheet.create({
     color: "#9b9fa3",
     fontSize: 12,
     marginTop: 2,
+  },
+  kingSection: {
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 14,
+    gap: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#25292c",
+    backgroundColor: "#141719",
+  },
+  kingHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  kingEyebrow: {
+    color: "#f3a64a",
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 1.4,
+  },
+  kingSubtitle: {
+    color: "#e5e6e3",
+    fontSize: 13,
+    fontWeight: "700",
+    marginTop: 2,
+  },
+  kingRule: {
+    color: "#8e9397",
+    fontSize: 10,
+    marginTop: 2,
+  },
+  sampleBadge: {
+    color: "#f3a64a",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1,
+    borderWidth: 1,
+    borderColor: "#684c2b",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  kingError: {
+    color: "#ff8b82",
+    fontSize: 11,
+  },
+  kingCardRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  kingCard: {
+    flex: 1,
+    minHeight: 82,
+    justifyContent: "space-between",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#343a3e",
+    backgroundColor: "#202529",
+    padding: 9,
+  },
+  kingCardLeader: {
+    borderColor: "#b47b37",
+    backgroundColor: "#29251f",
+  },
+  kingCardTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 3,
+  },
+  kingRank: {
+    color: "#f3a64a",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  kingNominations: {
+    color: "#b1b5b8",
+    fontSize: 9,
+    fontWeight: "700",
+  },
+  kingVideoTitle: {
+    color: "#f4f4f1",
+    fontSize: 11,
+    fontWeight: "800",
+    lineHeight: 14,
   },
   uploadButton: {
     minHeight: 40,
