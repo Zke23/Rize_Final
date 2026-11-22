@@ -1,29 +1,102 @@
 # Matroom
 
-Matroom is a starter monorepo for a wrestling-focused social app. It contains an Expo/React Native client, an Express API, and local PostgreSQL and Redis services.
+Matroom is a wrestling-focused social app with an Expo/React Native client, an Express API, and Dockerized PostgreSQL and Redis services.
 
-## Requirements
+## Project status
+
+Matroom is an active local-development prototype. The main account, video, and social flows are implemented; messaging and production hosting are not.
+
+### Implemented
+
+- Email/password registration and sign-in; account profiles store weight class, school, and season record.
+- A vertical video feed with MP4/MOV uploads, captions, authenticated playback, and profile-owned video removal.
+- Per-account likes and dislikes, comments, and share counts. Commenters are labeled by school when available. The device share menu shares a caption and video ID.
+- A King of the Hill leaderboard. Each account has one nomination and can move it to another video. Three animated sample leaders appear until real nominations exist.
+- Docker Compose services for the API, PostgreSQL, and Redis. Video files persist in the `videos_data` volume.
+
+### Current limitations
+
+- Messages is a placeholder.
+- King of the Hill sample cards are demo data, not playable clips.
+- Shared captions and video IDs are not deep links.
+- Sign-in has no email verification or password recovery.
+- Video files use a local Docker volume. A Cloud Run deployment needs object storage such as Google Cloud Storage and production secrets/configuration.
+
+## Technology
+
+- Mobile: Expo, React Native, TypeScript, Expo Go
+- API: Node.js 22+, Express, TypeScript
+- Data: PostgreSQL and Redis
+- Local infrastructure: Docker Compose
+
+## Setup
+
+### Requirements
 
 - Docker Desktop (or Docker Engine with the Compose plugin)
-- Node.js 22.13 or newer and npm to run the Expo mobile app
+- Node.js 22.13 or newer and npm
+- Expo Go on a physical device, or an iOS/Android simulator
 
-## Start developing
+### Start the API and data services
 
-1. Copy `.env.example` to `.env` in the project root.
-2. Start the API and its PostgreSQL and Redis dependencies: `docker compose up --build -d`
-3. Copy `apps/mobile/.env.example` to `apps/mobile/.env`. For Expo Go on a physical device, set `EXPO_PUBLIC_API_URL` to your computer's LAN IP address, such as `http://192.168.1.25:3000`.
-4. Install dependencies with `npm install`, then start the mobile app: `npm run dev:mobile`
+1. Copy the root `.env.example` to `.env`. Its credentials are development defaults; change them before exposing the services.
+2. From the repository root, start the stack:
 
-Create an account in the app, then use the Feed, Messages, and Profile tabs. The feed scrolls vertically through uploaded clips; choose **Upload** to select an MP4 or MOV video up to 60 seconds and 100 MB. Captions are optional. Signed-in users can like or dislike each clip, comment (commenters are identified by their school when available), and share its caption and video ID through the device share menu. Messages currently opens a placeholder screen.
+   ```sh
+   docker compose up --build -d
+   ```
 
-The feed header includes a subtly animated King of the Hill top three. Sample leaders are shown until real nominations arrive; each account has one nomination and can move it to another clip.
+3. Check that the services are healthy:
 
-Uploaded clips are associated with the account that shared them. The Profile tab lists your clips and lets you take them down; only the owner can delete a clip. Profiles and video metadata are stored in PostgreSQL. Uploaded video files are stored in the Compose `videos_data` volume and survive container restarts and `docker compose down`. Do not use `docker compose down -v` unless you intend to delete the database, cache, and uploaded videos. This local volume is for development on one Docker host; a Cloud Run deployment needs object storage such as Google Cloud Storage instead.
+   ```sh
+   docker compose ps
+   ```
 
-The API health endpoint is `http://localhost:3000/api/health`. It checks PostgreSQL and Redis and returns HTTP 503 if either service is unavailable. The API container waits for both data services to become healthy before starting.
+   The API health endpoint is <http://localhost:3000/api/health>. It reports PostgreSQL and Redis status.
 
-To run the API directly on the host instead, use `docker compose up -d postgres redis`, then run `npm install` and `npm run dev:api`. Stop the containerized stack with `docker compose down`; add `-v` only if you also want to delete the persisted database and cache data.
+### Start the mobile app
 
-Run TypeScript checks for both workspaces with `npm run typecheck`.
+1. Copy `apps/mobile/.env.example` to `apps/mobile/.env`.
+2. Set `EXPO_PUBLIC_API_URL`:
+   - Physical device on the same Wi-Fi: use your computer's LAN IP, for example `http://192.168.1.25:3000`.
+   - Simulator: use the API address reachable from that simulator.
+3. Install dependencies and start Expo:
 
-The Expo app runs on the host so Expo can connect to simulators and physical devices. Account sign-in currently uses email and password without email verification or password recovery. Clip moderation/AI, likes, and King of the Hill logic are not implemented yet.
+   ```sh
+   npm install
+   npm run dev:mobile
+   ```
+
+4. Open the project in Expo Go by scanning the QR code. Sign in or create an account, then use the Feed and Profile tabs.
+
+The Expo app runs on the host rather than in Docker so it can connect to simulators and physical devices.
+
+## Features and data
+
+- Video uploads accept MP4 or MOV clips up to 60 seconds and 100 MB. Captions are optional.
+- PostgreSQL stores account profiles, video metadata, reactions, nominations, comments, and share counts. Redis is connected and included in API health checks.
+- Uploaded video files are stored in the Compose `videos_data` volume. `docker compose down` preserves the volumes.
+- **Do not run `docker compose down -v`** unless you intend to delete the database, cache, and uploaded videos.
+
+To run the API directly on the host, start only PostgreSQL and Redis with `docker compose up -d postgres redis`, then run `npm run dev:api` in a separate terminal.
+
+## Development checks
+
+From the repository root:
+
+```sh
+npm run typecheck
+npm run build --workspace @matroom/api
+```
+
+For mobile bundle validation:
+
+```sh
+npm exec --workspace @matroom/mobile -- expo export --platform ios
+```
+
+## AI tool usage
+
+GitHub Copilot in VS Code was used as an AI development assistant throughout the project. It assisted with Docker/Compose setup, account and profile flows, video upload/feed work, social interactions, King of the Hill, Expo troubleshooting, and documentation.
+
+Changes were checked with the TypeScript checks, API builds, Expo iOS bundle exports, Docker health checks, and focused API integration checks for uploads, ownership, reactions, comments, shares, and nominations. These checks do not replace manual testing on a device or a security review before production deployment.
