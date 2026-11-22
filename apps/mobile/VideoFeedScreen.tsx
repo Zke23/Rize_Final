@@ -148,6 +148,8 @@ function KingOfHillShowcase({
   error: string;
 }) {
   const leaders = videos.length > 0 ? videos : sampleKingVideos;
+  const podium =
+    leaders.length === 3 ? [leaders[1], leaders[0], leaders[2]] : leaders;
   return (
     <View style={styles.kingSection}>
       <View style={styles.kingHeader}>
@@ -159,10 +161,22 @@ function KingOfHillShowcase({
         <Text style={styles.sampleBadge}>{videos.length > 0 ? "LIVE" : "SAMPLE"}</Text>
       </View>
       {error ? <Text style={styles.kingError}>{error}</Text> : null}
-      <View style={styles.kingCardRow}>
-        {leaders.map((video, index) => (
-          <KingOfHillCard key={video.id} video={video} rank={index + 1} />
-        ))}
+      <View style={styles.kingArena}>
+        <View pointerEvents="none" style={styles.kingArenaGlow} />
+        <View style={styles.kingCardRow}>
+          {podium.map((video) => (
+            <KingOfHillCard
+              key={video.id}
+              video={video}
+              rank={leaders.indexOf(video) + 1}
+            />
+          ))}
+        </View>
+        <View style={styles.kingArenaFooter}>
+          <View style={styles.kingArenaLine} />
+          <Text style={styles.kingArenaCaption}>THE MAT IS LIVE</Text>
+          <View style={styles.kingArenaLine} />
+        </View>
       </View>
     </View>
   );
@@ -175,42 +189,93 @@ interface KingOfHillCardProps {
 
 function KingOfHillCard({ video, rank }: KingOfHillCardProps) {
   const movement = useRef(new Animated.Value(0)).current;
-  const direction = rank === 2 ? 1 : -1;
+  const glow = useRef(new Animated.Value(0)).current;
+  const direction = rank === 2 ? 1 : rank === 3 ? -1 : 0;
+  const rotationRange =
+    rank === 1
+      ? ["-0.4deg", "0deg", "0.4deg"]
+      : direction > 0
+        ? ["-0.3deg", "0deg", "0.9deg"]
+        : ["0.3deg", "0deg", "-0.9deg"];
 
   useEffect(() => {
     const animation = Animated.loop(
       Animated.sequence([
-        Animated.delay(rank * 130),
+        Animated.delay(rank * 170),
         Animated.timing(movement, {
           toValue: 1,
-          duration: 850,
-          easing: Easing.inOut(Easing.sin),
+          duration: 520,
+          easing: Easing.out(Easing.quad),
           useNativeDriver: true,
         }),
         Animated.timing(movement, {
-          toValue: 0,
-          duration: 850,
+          toValue: -0.45,
+          duration: 340,
           easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
+        Animated.spring(movement, {
+          toValue: 0,
+          tension: 100,
+          friction: 9,
+          useNativeDriver: true,
+        }),
+        Animated.delay(650),
       ]),
     );
     animation.start();
-    return () => animation.stop();
-  }, [movement, rank]);
+
+    let glowAnimation: Animated.CompositeAnimation | null = null;
+    if (rank === 1) {
+      glowAnimation = Animated.loop(
+        Animated.sequence([
+          Animated.timing(glow, {
+            toValue: 1,
+            duration: 1100,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+          Animated.timing(glow, {
+            toValue: 0,
+            duration: 1100,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+        ]),
+      );
+      glowAnimation.start();
+    }
+
+    return () => {
+      animation.stop();
+      glowAnimation?.stop();
+    };
+  }, [glow, movement, rank]);
 
   const animatedStyle = {
     transform: [
       {
         translateY: movement.interpolate({
-          inputRange: [0, 1],
-          outputRange: [0, direction * 3],
+          inputRange: [-0.45, 0, 1],
+          outputRange: [rank === 1 ? 2 : -1, 0, rank === 1 ? -5 : 2],
+        }),
+      },
+      {
+        translateX: movement.interpolate({
+          inputRange: [-0.45, 0, 1],
+          outputRange: [direction * -3, 0, direction * 7],
         }),
       },
       {
         rotate: movement.interpolate({
-          inputRange: [0, 1],
-          outputRange: [direction * 0.4 + "deg", direction * -0.4 + "deg"],
+          inputRange: [-0.45, 0, 1],
+          outputRange: rotationRange,
+        }),
+      },
+      {
+        scale: movement.interpolate({
+          inputRange: [-0.45, 0, 1],
+          outputRange: [0.99, 1, rank === 1 ? 1.045 : 1.025],
         }),
       },
     ],
@@ -224,13 +289,38 @@ function KingOfHillCard({ video, rank }: KingOfHillCardProps) {
         animatedStyle,
       ]}
     >
+      {rank === 1 ? (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.kingCardGlow,
+            {
+              opacity: glow.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0.08, 0.26],
+              }),
+              transform: [
+                {
+                  scale: glow.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0.85, 1.18],
+                  }),
+                },
+              ],
+            },
+          ]}
+        />
+      ) : null}
       <View style={styles.kingCardTop}>
-        <Text style={styles.kingRank}>#{rank}</Text>
-        <Text style={styles.kingNominations}>{video.nominations} noms</Text>
+        <View style={styles.kingRankBadge}>
+          <Text style={styles.kingRank}>#{rank}</Text>
+        </View>
+        <Text style={styles.kingNominations}>{video.nominations} NOMS</Text>
       </View>
       <Text style={styles.kingVideoTitle} numberOfLines={2}>
         {video.title}
       </Text>
+      {rank === 1 ? <Text style={styles.kingLeaderMark}>CURRENT KING</Text> : null}
     </Animated.View>
   );
 }
@@ -997,12 +1087,12 @@ const styles = StyleSheet.create({
   },
   kingSection: {
     paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 14,
-    gap: 10,
+    paddingTop: 9,
+    paddingBottom: 12,
+    gap: 8,
     borderBottomWidth: 1,
     borderBottomColor: "#25292c",
-    backgroundColor: "#141719",
+    backgroundColor: "#111416",
   },
   kingHeader: {
     flexDirection: "row",
@@ -1022,17 +1112,17 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   kingRule: {
-    color: "#8e9397",
+    color: "#7e878e",
     fontSize: 10,
     marginTop: 2,
   },
   sampleBadge: {
-    color: "#f3a64a",
+    color: "#e9a94f",
     fontSize: 10,
     fontWeight: "900",
     letterSpacing: 1,
     borderWidth: 1,
-    borderColor: "#684c2b",
+    borderColor: "#5e482b",
     borderRadius: 8,
     paddingHorizontal: 8,
     paddingVertical: 5,
@@ -1041,45 +1131,114 @@ const styles = StyleSheet.create({
     color: "#ff8b82",
     fontSize: 11,
   },
+  kingArena: {
+    position: "relative",
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#293138",
+    borderRadius: 16,
+    backgroundColor: "#0b0e11",
+    paddingHorizontal: 8,
+    paddingTop: 12,
+    paddingBottom: 8,
+  },
+  kingArenaGlow: {
+    position: "absolute",
+    top: -50,
+    right: 45,
+    width: 150,
+    height: 110,
+    borderRadius: 75,
+    backgroundColor: "#c27b30",
+    opacity: 0.1,
+  },
   kingCardRow: {
     flexDirection: "row",
-    gap: 8,
+    alignItems: "flex-end",
+    justifyContent: "center",
+    gap: 6,
   },
   kingCard: {
     flex: 1,
-    minHeight: 82,
+    minHeight: 94,
     justifyContent: "space-between",
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#343a3e",
-    backgroundColor: "#202529",
-    padding: 9,
+    borderColor: "#323a40",
+    backgroundColor: "#181d21",
+    padding: 10,
   },
   kingCardLeader: {
-    borderColor: "#b47b37",
-    backgroundColor: "#29251f",
+    zIndex: 2,
+    flex: 1.16,
+    minHeight: 110,
+    marginBottom: 7,
+    borderColor: "#b78039",
+    backgroundColor: "#211d18",
+  },
+  kingCardGlow: {
+    position: "absolute",
+    top: -28,
+    right: -14,
+    width: 94,
+    height: 94,
+    borderRadius: 47,
+    backgroundColor: "#efad55",
   },
   kingCardTop: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 3,
+    gap: 4,
+  },
+  kingRankBadge: {
+    minWidth: 26,
+    alignItems: "center",
+    borderRadius: 7,
+    backgroundColor: "#292f33",
+    paddingHorizontal: 5,
+    paddingVertical: 3,
   },
   kingRank: {
-    color: "#f3a64a",
+    color: "#efad55",
     fontSize: 12,
     fontWeight: "900",
   },
   kingNominations: {
-    color: "#b1b5b8",
-    fontSize: 9,
-    fontWeight: "700",
+    color: "#a9b0b4",
+    fontSize: 8,
+    fontWeight: "800",
+    letterSpacing: 0.6,
   },
   kingVideoTitle: {
     color: "#f4f4f1",
     fontSize: 11,
     fontWeight: "800",
     lineHeight: 14,
+  },
+  kingLeaderMark: {
+    color: "#e4a449",
+    fontSize: 8,
+    fontWeight: "900",
+    letterSpacing: 1.1,
+  },
+  kingArenaFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: 9,
+  },
+  kingArenaLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: "#343d43",
+  },
+  kingArenaCaption: {
+    color: "#737d83",
+    fontSize: 8,
+    fontWeight: "800",
+    letterSpacing: 1.4,
   },
   uploadButton: {
     minHeight: 40,
