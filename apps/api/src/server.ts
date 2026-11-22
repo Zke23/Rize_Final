@@ -1,10 +1,12 @@
 import { app } from "./app";
 import { config } from "./config";
+import { initializeSchema } from "./schema";
 import { cache, database } from "./services";
 
 async function start(): Promise<void> {
   await cache.connect();
   await database.query("SELECT 1");
+  await initializeSchema();
 
   const server = app.listen(config.port, () => {
     console.log(`Matroom API listening on http://localhost:${config.port}`);
