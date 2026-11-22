@@ -47,6 +47,15 @@ export async function initializeSchema(): Promise<void> {
       PRIMARY KEY (video_id, user_id)
     );
 
+    CREATE TABLE IF NOT EXISTS video_nominations (
+      user_id UUID PRIMARY KEY REFERENCES app_users(id) ON DELETE CASCADE,
+      video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS video_nominations_video_id_idx ON video_nominations(video_id);
+
     CREATE TABLE IF NOT EXISTS video_comments (
       id UUID PRIMARY KEY,
       video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
